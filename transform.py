@@ -5,6 +5,8 @@ import boto3
 import psycopg2
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
+from validate import validate_bronze_data
+import pandas as pd
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -27,8 +29,13 @@ def transform_bronze_to_silver(local_bronze_file, yesterday):
     logger.info(f"Starting Transformation and Load for: {yesterday}")
     
     try:
-        
-        # 1. Transform using DuckDB
+        #1 Validate Bronze Data
+        df=pd.read_json(local_bronze_file)
+        if not validate_bronze_data(df):
+            logger.error("🛑 Data Quality Check Failed. Aborting Transformation.")
+            return None
+
+        # 2. Transform using DuckDB
         with duckdb.connect() as con:
             df = con.execute(f"""
                 SELECT 
@@ -60,7 +67,7 @@ def transform_bronze_to_silver(local_bronze_file, yesterday):
         return None
         
     finally:
-        # We only clean up the bronze file here. 
+        # Only clean up the bronze file. 
         # local_silver_file is kept so analytics.py can access it.
         if os.path.exists(local_bronze_file): 
             os.remove(local_bronze_file)
@@ -70,7 +77,7 @@ def load_silver_to_postgres(df):
     db_host = os.getenv("DB_HOST")
     if not db_host:
         logger.info("Database credentials not found. Skipping Postgres load (running in Cloud mode).")
-        return
+        return True # Not an error, just skipping Postgres load.
     
     conn = psycopg2.connect(
         host=os.getenv("DB_HOST"), 
@@ -90,5 +97,9 @@ def load_silver_to_postgres(df):
             """, price_data)
             conn.commit()
             logger.info("Successfully loaded data into Postgres.")
+        return True
+    except Exception as e:
+        logger.error(f"Postgres load failed: {e}")
+        return False
     finally:
         conn.close()

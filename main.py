@@ -46,12 +46,12 @@ def run_pipeline(force_overwrite=False):
         # Analytics Stage
         logger.info("--- Starting Stage: Analytics/Load ---")
         gold_success = generate_gold_metrics(silver_path, yesterday)   
-        if gold_success is None:
+        if not gold_success:
             logger.error("🛑 Gold Metrics generation/load failed. Aborting pipeline.")
             sys.exit(1)
          
     except Exception as e:
-        logger.error(f"💥 Pipeline Failure: {e}")
+        logger.error(f"💥 Pipeline Failure: {e}", exc_info=True)
         sys.exit(1)
 
     logger.info("🎉 PIPELINE RUN COMPLETE!")

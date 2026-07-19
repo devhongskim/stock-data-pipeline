@@ -42,7 +42,9 @@ def generate_gold_metrics(silver_path, yesterday):
             """).df()
             
         # Load to Postgres and S3
-        load_gold_to_postgres(df_gold)
+        pg_ok = load_gold_to_postgres(df_gold)
+        if not pg_ok:
+            logger.error("🛑 Gold Metrics Postgres load failed. Continuing to upload to S3.")
         upload_gold_to_s3(df_gold, yesterday, os.getenv("AWS_BRONZE_BUCKET"), local_gold_file)
         
         logger.info(f"🎉 Gold layer finalized for {yesterday}")
@@ -50,7 +52,7 @@ def generate_gold_metrics(silver_path, yesterday):
 
     except Exception as e:
         logger.error(f"Analytics/Gold generation failed for {yesterday}: {e}")
-        raise e
+        return False
         
     finally:
         # Cleanup temporary files 
@@ -76,7 +78,7 @@ def load_gold_to_postgres(df_gold):
     db_host = os.getenv("DB_HOST")
     if not db_host:
         logger.info("Database credentials not found. Skipping Postgres load (running in Cloud mode).")
-        return
+        return True # Not an error, just skipping Postgres load. 
     conn = psycopg2.connect(
         host=os.getenv("DB_HOST"), 
         database=os.getenv("DB_NAME"), 
@@ -95,5 +97,9 @@ def load_gold_to_postgres(df_gold):
             """, metric_data)
             conn.commit()
             logger.info("Successfully loaded Gold metrics into Postgres.")
+        return True
+    except Exception as e:
+        logger.error(f"Postgres load failed: {e}")
+        return False
     finally:
         conn.close()

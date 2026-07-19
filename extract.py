@@ -52,7 +52,7 @@ def fetch_stock_data(yesterday, force_overwrite=False):
 
     for ticker in TICKERS:
         retries = 0
-        max_retries = 2
+        max_retries = 2 #total attempts will be max_retries + 1
 
         while retries <= max_retries:
             url = f"https://api.polygon.io/v1/open-close/{ticker}/{yesterday}?adjusted=true&apiKey={api_key}"
@@ -65,7 +65,7 @@ def fetch_stock_data(yesterday, force_overwrite=False):
                 # Move to the next ticker after a successful extraction
             elif response.status_code == 429:
                 retries += 1
-                if retries == 3:
+                if retries == max_retries + 1:
                     logger.error(f"Max retries reached. Aborting.")
                     return None
                 logger.warning(f"Rate limited on {ticker}. Perform retry {retries}/{max_retries} after 60 seconds.")
@@ -92,5 +92,7 @@ def fetch_stock_data(yesterday, force_overwrite=False):
             logger.info(f"Raw payload secured: s3://{BUCKET_NAME}/{s3_key}")
         except Exception as e:
             logger.error(f"AWS S3 Upload Failed: {e}")
-            
+            if os.path.exists(local_bronze): 
+                os.remove(local_bronze)
+            return None
     return local_bronze
