@@ -2,9 +2,9 @@ import sys
 import logging
 from datetime import datetime, timedelta
 import pandas_market_calendars as mcal
-from src.extract import fetch_stock_data
-from src.transform import transform_bronze_to_silver
-from src.analytics import generate_gold_metrics
+from extract import fetch_stock_data
+from transform import transform_bronze_to_silver
+from analytics import generate_gold_metrics
 import argparse
 
 # Setup logging
