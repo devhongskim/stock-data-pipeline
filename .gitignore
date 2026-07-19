@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+temp_*.json
+temp_*.parquet
+.DS_Store
