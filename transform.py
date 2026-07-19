@@ -60,10 +60,10 @@ def transform_bronze_to_silver(local_bronze_file, yesterday):
         return None
         
     finally:
+        # We only clean up the bronze file here. 
+        # local_silver_file is kept so analytics.py can access it.
         if os.path.exists(local_bronze_file): 
             os.remove(local_bronze_file)
-        if os.path.exists(local_silver_file): 
-            os.remove(local_silver_file)
 
 def load_silver_to_postgres(df):
     # Check if DB credentials exist before trying to connect
