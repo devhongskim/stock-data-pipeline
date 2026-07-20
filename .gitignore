@@ -4,3 +4,12 @@ __pycache__/
 temp_*.json
 temp_*.parquet
 .DS_Store
+
+# --- Astronomer & Airflow Local Files ---
+airflow_db.sqlite
+airflow.cfg
+unittests.cfg
+webserver_config.py
+logs/
+plugins/
+.astro/
