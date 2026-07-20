@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Constants
-TICKERS = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA"]
+TICKERS = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA", "GOOGL", "AMZN", "META", "AVGO", "INTC"]
 S3_REGION = "us-east-1"
 BUCKET_NAME = os.getenv("AWS_BRONZE_BUCKET")
 
