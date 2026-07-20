@@ -6,3 +6,4 @@ psycopg2-binary
 pandas_market_calendars
 pandas
 pyarrow
+setuptools
