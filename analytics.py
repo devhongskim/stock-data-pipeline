@@ -20,14 +20,15 @@ s3_client = boto3.client(
     region_name="us-east-1"
 )
 
-def generate_gold_metrics(silver_path, yesterday):
-    local_silver_file = silver_path
+def generate_gold_metrics(silver_s3_key, yesterday):
+    bucket_name = os.getenv("AWS_BRONZE_BUCKET")
+    local_silver_file = f"temp_silver_{yesterday}.parquet"
     local_gold_file = f"temp_gold_{yesterday}.parquet"
     
     logger.info(f"Starting Gold Metrics generation for: {yesterday}")
     
     try:
-        # Load Silver from the local file
+        s3_client.download_file(bucket_name, silver_s3_key, local_silver_file)
         df_silver = pd.read_parquet(local_silver_file)
         
         # Calculate Gold metrics using DuckDB

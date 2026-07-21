@@ -78,7 +78,7 @@ def stock_market_pipeline():
             return False
             
         # Calls your exact function from analytics.py
-        gold_success = generate_gold_metrics(silver_path, target_date)
+        gold_success = generate_gold_metrics(silver_key, target_date)
         if not gold_success:
             raise ValueError("🛑 Gold Metrics generation failed.")
         return True

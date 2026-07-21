@@ -15,7 +15,8 @@ def run_pipeline(force_overwrite=False):
     logger.info("🚀 STARTING AUTOMATED CLOUD PIPELINE EXECUTION")
     
     # Calculate yesterday's date
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    #yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    yesterday = "2026-07-17"
     
     # 1. GATEKEEPER: Check Market Schedule
     nyse = mcal.get_calendar('NYSE')
