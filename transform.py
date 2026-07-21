@@ -21,15 +21,19 @@ s3_client = boto3.client(
     region_name="us-east-1"
 )
 
-def transform_bronze_to_silver(local_bronze_file, yesterday):
+def transform_bronze_to_silver(bronze_s3_key, yesterday):
 
     bucket_name = os.getenv("AWS_BRONZE_BUCKET")
     local_silver_file = f"temp_silver_{yesterday}.parquet"
-    
+    local_bronze_file = f"temp_bronze_{yesterday}.json"
+    silver_s3_key = f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet"
+
     logger.info(f"Starting Transformation and Load for: {yesterday}")
     
     try:
         #1 Validate Bronze Data
+        s3_client.download_file(bucket_name, bronze_s3_key, local_bronze_file)
+
         df=pd.read_json(local_bronze_file)
         if not validate_bronze_data(df):
             logger.error("🛑 Data Quality Check Failed. Aborting Transformation.")
@@ -55,22 +59,22 @@ def transform_bronze_to_silver(local_bronze_file, yesterday):
         # 3. Load to Postgres
         load_silver_to_postgres(df)
         
-        # 4. Upload to S3 Silver and save locally for the next pipeline stage
+        # 4. Upload to S3 Silver
         df.to_parquet(local_silver_file)
         s3_client.upload_file(local_silver_file, bucket_name, f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet")
         
         logger.info(f"🥈 Silver layer and Postgres load complete for {yesterday}")
-        return local_silver_file
+        return silver_s3_key
 
     except Exception as e:
         logger.error(f"Transformation/Load failed for {yesterday}: {e}")
         return None
         
     finally:
-        # Only clean up the bronze file. 
-        # local_silver_file is kept so analytics.py can access it.
-        if os.path.exists(local_bronze_file): 
+        if os.path.exists(local_bronze_file):
             os.remove(local_bronze_file)
+        if os.path.exists(local_silver_file):
+            os.remove(local_silver_file)
 
 def load_silver_to_postgres(df):
     # Check if DB credentials exist before trying to connect

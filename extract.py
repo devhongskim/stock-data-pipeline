@@ -40,7 +40,7 @@ def fetch_stock_data(yesterday, force_overwrite=False):
     #1 IDEMPOTENCY GATE: Check if data exists BEFORE calling the API
     if not force_overwrite and check_exists(s3_client, BUCKET_NAME, s3_key):
         logger.info(f"File {s3_key} already exists. Skipping extraction.")
-        return None
+        return s3_key  # Return the S3 key for downstream tasks
 
     #2 API EXTRACTION
     api_key = os.getenv("POLYGON_API_KEY")
@@ -92,7 +92,7 @@ def fetch_stock_data(yesterday, force_overwrite=False):
             logger.info(f"Raw payload secured: s3://{BUCKET_NAME}/{s3_key}")
         except Exception as e:
             logger.error(f"AWS S3 Upload Failed: {e}")
-            if os.path.exists(local_bronze): 
-                os.remove(local_bronze)
-            return None
-    return local_bronze
+        finally:
+            os.remove(local_bronze)
+            
+    return s3_key
