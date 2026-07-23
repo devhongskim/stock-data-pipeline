@@ -22,17 +22,27 @@ def generate_gold_metrics(silver_s3_key, yesterday):
     bucket_name = os.getenv("AWS_BUCKET")
     local_silver_file = f"temp_silver_{yesterday}.parquet"
     local_gold_file = f"temp_gold_{yesterday}.parquet"
+    local_duckdb_file = "stock_metrics.duckdb"
+    duckdb_s3_key = "data/stock_metrics.duckdb"
     
     logger.info(f"Starting Gold Metrics generation for: {yesterday}")
     
     try:
-        # Download Silver Data
+        # 1. Download persistent DuckDB file from S3 if it exists
+        try:
+            s3_client.download_file(bucket_name, duckdb_s3_key, local_duckdb_file)
+            logger.info("Successfully downloaded existing stock_metrics.duckdb from S3.")
+        except Exception:
+            logger.info("No existing stock_metrics.duckdb found in S3. A new one will be created.")
+
+        # 2. Connect to DuckDB Metrics Warehouse
+        con = duckdb.connect(local_duckdb_file)
+        
+        # 3. Download Silver Data
         s3_client.download_file(bucket_name, silver_s3_key, local_silver_file)
         df_silver = pd.read_parquet(local_silver_file)
 
-        # 2. Connect to DuckDB Metrics Warehouse
-        con = duckdb.connect("stock_metrics.duckdb")
-        
+
         try:
             # Register pandas dataframe so DuckDB can query it directly
             con.register("df_silver", df_silver)
@@ -71,7 +81,7 @@ def generate_gold_metrics(silver_s3_key, yesterday):
         finally:
             con.close()
 
-        # 3. Re-generate df_gold cleanly to push to S3
+        # 4. Re-generate df_gold cleanly to push to S3
         with duckdb.connect() as con:
             con.register("df_silver", df_silver)
             df_gold = con.execute("""
@@ -83,9 +93,9 @@ def generate_gold_metrics(silver_s3_key, yesterday):
                 FROM df_silver
             """).df()
             
-        # Load to S3
-        upload_gold_to_s3(df_gold, yesterday, os.getenv("AWS_BUCKET"), local_gold_file)
-        
+        # 5. Load to S3
+        upload_gold_to_s3(df_gold, yesterday, bucket_name, local_gold_file)
+        s3_client.upload_file(local_duckdb_file, bucket_name, duckdb_s3_key)
         logger.info(f"🎉 Successfully loaded and upserted Gold metrics for {yesterday}")
         return True
 
@@ -93,13 +103,15 @@ def generate_gold_metrics(silver_s3_key, yesterday):
     except Exception as e:
         logger.error(f"Gold generation failed for {yesterday}: {e}")
         return False
-        
+
+    # 6. Cleanup temporary files  
     finally:
-        # Cleanup temporary files 
         if os.path.exists(local_silver_file):
             os.remove(local_silver_file)
         if os.path.exists(local_gold_file): 
             os.remove(local_gold_file)
+        if os.path.exists(local_duckdb_file):
+            os.remove(local_duckdb_file)
             
 
 def upload_gold_to_s3(df_gold, yesterday, bucket_name, local_gold_file):

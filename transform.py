@@ -24,12 +24,21 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
     bucket_name = os.getenv("AWS_BUCKET")
     local_silver_file = f"temp_silver_{yesterday}.parquet"
     local_bronze_file = f"temp_bronze_{yesterday}.json"
+    local_duckdb_file = "stock_raw.duckdb"
+    duckdb_s3_key = "data/stock_raw.duckdb"
     silver_s3_key = f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet"
 
     logger.info(f"Starting Transformation and Load for: {yesterday}")
     
     try:
-        #1 Validate Bronze Data
+        # 1. Download persistent DuckDB file from S3 if it exists
+        try:
+            s3_client.download_file(bucket_name, duckdb_s3_key, local_duckdb_file)
+            logger.info("Successfully downloaded existing stock_raw.duckdb from S3.")
+        except Exception:
+            logger.info("No existing stock_raw.duckdb found in S3. A new one will be created.")
+
+        #2 Validate Bronze Data
         s3_client.download_file(bucket_name, bronze_s3_key, local_bronze_file)
 
         df=pd.read_json(local_bronze_file)
@@ -37,8 +46,8 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
             logger.error("🛑 Data Quality Check Failed. Aborting Transformation.")
             return None
 
-        # 2. Connect to DuckDB Warehouse and perform combined Transform & Upsert
-        con = duckdb.connect("stock_raw.duckdb")
+        # 3. Connect to DuckDB Warehouse and perform combined Transform & Upsert
+        con = duckdb.connect(local_duckdb_file)
 
         try:
             # Ensure master table exists with proper primary key for upserts
@@ -89,7 +98,7 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
         finally:
             con.close()
         
-        # 3. Generate Parquet for S3 Silver Layer using an ephemeral DuckDB query
+        # 4. Generate Parquet for S3 Silver Layer using an ephemeral DuckDB query
         with duckdb.connect() as con:
             silver_df = con.execute(f"""
                 SELECT 
@@ -106,10 +115,11 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
                 WHERE status = 'OK'
             """).df()
         
-        # 4. Upload to S3 Silver
+        # 5. Upload parquet to S3 Silver & Backup DuckDB to S3
         silver_df.to_parquet(local_silver_file)
-        s3_client.upload_file(local_silver_file, bucket_name, f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet")
-        
+        s3_client.upload_file(local_silver_file, bucket_name, f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet")        
+        s3_client.upload_file(local_duckdb_file, bucket_name, duckdb_s3_key)
+
         logger.info(f"🥈 Silver layer and DuckDB load complete for {yesterday}")
         return silver_s3_key
 
@@ -122,3 +132,5 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
             os.remove(local_bronze_file)
         if os.path.exists(local_silver_file):
             os.remove(local_silver_file)
+        if os.path.exists(local_duckdb_file):
+            os.remove(local_duckdb_file)
