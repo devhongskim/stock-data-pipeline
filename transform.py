@@ -2,8 +2,6 @@ import os
 import logging
 import duckdb
 import boto3
-import psycopg2
-from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 from validate import validate_bronze_data
 import pandas as pd
@@ -23,7 +21,7 @@ s3_client = boto3.client(
 
 def transform_bronze_to_silver(bronze_s3_key, yesterday):
 
-    bucket_name = os.getenv("AWS_BRONZE_BUCKET")
+    bucket_name = os.getenv("AWS_BUCKET")
     local_silver_file = f"temp_silver_{yesterday}.parquet"
     local_bronze_file = f"temp_bronze_{yesterday}.json"
     silver_s3_key = f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet"
@@ -39,9 +37,61 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
             logger.error("🛑 Data Quality Check Failed. Aborting Transformation.")
             return None
 
-        # 2. Transform using DuckDB
+        # 2. Connect to DuckDB Warehouse and perform combined Transform & Upsert
+        con = duckdb.connect("stock_raw.duckdb")
+
+        try:
+            # Ensure master table exists with proper primary key for upserts
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS stock_prices (
+                    trading_date DATE,
+                    ticker VARCHAR,
+                    open_price DOUBLE,
+                    high_price DOUBLE,
+                    low_price DOUBLE,
+                    close_price DOUBLE,
+                    volume BIGINT,
+                    after_hours DOUBLE,
+                    pre_market DOUBLE,
+                    PRIMARY KEY (ticker, trading_date)
+                )
+            """)
+
+            # Parse, clean, and upsert straight from the JSON source file into DuckDB
+            con.execute(f"""
+                INSERT INTO stock_prices (
+                    trading_date, ticker, open_price, high_price, 
+                    low_price, close_price, volume, after_hours, pre_market
+                )
+                SELECT 
+                    CAST("from" AS DATE) as trading_date,
+                    symbol as ticker,
+                    open::DOUBLE as open_price,
+                    high::DOUBLE as high_price,
+                    low::DOUBLE as low_price,
+                    close::DOUBLE as close_price,
+                    volume::BIGINT as trading_volume,
+                    afterHours::DOUBLE as after_hours,
+                    preMarket::DOUBLE as pre_market
+                FROM read_json_auto('{local_bronze_file}')
+                WHERE status = 'OK'
+                ON CONFLICT (ticker, trading_date) DO UPDATE SET 
+                    open_price = EXCLUDED.open_price, 
+                    high_price = EXCLUDED.high_price, 
+                    low_price = EXCLUDED.low_price, 
+                    close_price = EXCLUDED.close_price, 
+                    volume = EXCLUDED.volume, 
+                    after_hours = EXCLUDED.after_hours, 
+                    pre_market = EXCLUDED.pre_market;
+            """)
+            logger.info("Successfully loaded and upserted Silver data into DuckDB warehouse.")
+            
+        finally:
+            con.close()
+        
+        # 3. Generate Parquet for S3 Silver Layer using an ephemeral DuckDB query
         with duckdb.connect() as con:
-            df = con.execute(f"""
+            silver_df = con.execute(f"""
                 SELECT 
                     CAST("from" AS DATE) as trading_date,
                     symbol as ticker,
@@ -56,14 +106,11 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
                 WHERE status = 'OK'
             """).df()
         
-        # 3. Load to Postgres
-        load_silver_to_postgres(df)
-        
         # 4. Upload to S3 Silver
-        df.to_parquet(local_silver_file)
+        silver_df.to_parquet(local_silver_file)
         s3_client.upload_file(local_silver_file, bucket_name, f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet")
         
-        logger.info(f"🥈 Silver layer and Postgres load complete for {yesterday}")
+        logger.info(f"🥈 Silver layer and DuckDB load complete for {yesterday}")
         return silver_s3_key
 
     except Exception as e:
@@ -75,35 +122,3 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
             os.remove(local_bronze_file)
         if os.path.exists(local_silver_file):
             os.remove(local_silver_file)
-
-def load_silver_to_postgres(df):
-    # Check if DB credentials exist before trying to connect
-    db_host = os.getenv("DB_HOST")
-    if not db_host:
-        logger.info("Database credentials not found. Skipping Postgres load (running in Cloud mode).")
-        return True # Not an error, just skipping Postgres load.
-    
-    conn = psycopg2.connect(
-        host=os.getenv("DB_HOST"), 
-        database=os.getenv("DB_NAME"), 
-        user=os.getenv("DB_USER"), 
-        password=os.getenv("DB_PASSWORD"), 
-        port=os.getenv("DB_PORT")
-    )
-    try:
-        with conn.cursor() as cur:
-            price_data = [tuple(x) for x in df[['trading_date', 'ticker', 'open_price', 'high_price', 'low_price', 'close_price', 'trading_volume', 'after_hours', 'pre_market']].to_numpy()]
-            execute_values(cur, """
-                INSERT INTO stock_prices (trading_date, ticker, open_price, high_price, low_price, close_price, volume, after_hours, pre_market)
-                VALUES %s
-                ON CONFLICT (ticker, trading_date) DO UPDATE SET 
-                    open_price = EXCLUDED.open_price, high_price = EXCLUDED.high_price, low_price = EXCLUDED.low_price, close_price = EXCLUDED.close_price, volume = EXCLUDED.volume, after_hours = EXCLUDED.after_hours, pre_market = EXCLUDED.pre_market;
-            """, price_data)
-            conn.commit()
-            logger.info("Successfully loaded data into Postgres.")
-        return True
-    except Exception as e:
-        logger.error(f"Postgres load failed: {e}")
-        return False
-    finally:
-        conn.close()

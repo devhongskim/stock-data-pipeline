@@ -35,8 +35,8 @@ def stock_market_pipeline():
             
         # Match main.py offset behavior to evaluate the correct target session
         target_date_obj = base_date - timedelta(days=1)
-        #target_date = target_date_obj.strftime('%Y-%m-%d')
-        target_date = "2026-07-17"  # Hardcoded for testing
+        target_date = target_date_obj.strftime('%Y-%m-%d')
+        #target_date = "2026-07-17"  # Hardcoded for testing
         
         nyse = mcal.get_calendar('NYSE')
         valid_days = nyse.valid_days(start_date=target_date, end_date=target_date)
@@ -53,7 +53,7 @@ def stock_market_pipeline():
         if not target_date:
             return None
         
-        bronze_key = fetch_stock_data(target_date, force_overwrite=True) # Keep True for testing. False in production.
+        bronze_key = fetch_stock_data(target_date, force_overwrite=False) # Keep True for testing. False in production.
         
         if not bronze_key:
             raise ValueError("🛑 Bronze Extraction failed.")

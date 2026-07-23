@@ -2,9 +2,7 @@ import os
 import logging
 import duckdb
 import boto3
-import psycopg2
 import pandas as pd
-from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 
 # Setup logging
@@ -21,18 +19,61 @@ s3_client = boto3.client(
 )
 
 def generate_gold_metrics(silver_s3_key, yesterday):
-    bucket_name = os.getenv("AWS_BRONZE_BUCKET")
+    bucket_name = os.getenv("AWS_BUCKET")
     local_silver_file = f"temp_silver_{yesterday}.parquet"
     local_gold_file = f"temp_gold_{yesterday}.parquet"
     
     logger.info(f"Starting Gold Metrics generation for: {yesterday}")
     
     try:
+        # Download Silver Data
         s3_client.download_file(bucket_name, silver_s3_key, local_silver_file)
         df_silver = pd.read_parquet(local_silver_file)
+
+        # 2. Connect to DuckDB Metrics Warehouse
+        con = duckdb.connect("stock_metrics.duckdb")
         
-        # Calculate Gold metrics using DuckDB
+        try:
+            # Register pandas dataframe so DuckDB can query it directly
+            con.register("df_silver", df_silver)
+
+            # Ensure gold metrics table exists with proper primary key for upserts
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS market_metrics (
+                    trading_date DATE,
+                    ticker VARCHAR,
+                    daily_return DOUBLE,
+                    intraday_volatility DOUBLE,
+                    PRIMARY KEY (ticker, trading_date)
+                )
+            """)
+
+            # Calculate and upsert metrics directly into DuckDB
+            con.execute("""
+                INSERT INTO market_metrics (
+                trading_date, 
+                ticker, 
+                daily_return, 
+                intraday_volatility)
+                SELECT 
+                    trading_date,
+                    ticker,
+                    ROUND(((close_price - open_price) / open_price) * 100, 2) as daily_return,
+                    ROUND(((high_price - low_price) / open_price) * 100, 2) as intraday_volatility
+                FROM df_silver
+                ON CONFLICT (ticker, trading_date) DO UPDATE SET 
+                    daily_return = EXCLUDED.daily_return, 
+                    intraday_volatility = EXCLUDED.intraday_volatility;
+            """)        
+
+            logger.info("Successfully loaded and upserted Gold data into DuckDB warehouse.")
+
+        finally:
+            con.close()
+
+        # 3. Re-generate df_gold cleanly to push to S3
         with duckdb.connect() as con:
+            con.register("df_silver", df_silver)
             df_gold = con.execute("""
                 SELECT 
                     trading_date, 
@@ -42,17 +83,15 @@ def generate_gold_metrics(silver_s3_key, yesterday):
                 FROM df_silver
             """).df()
             
-        # Load to Postgres and S3
-        pg_ok = load_gold_to_postgres(df_gold)
-        if not pg_ok:
-            logger.error("🛑 Gold Metrics Postgres load failed. Continuing to upload to S3.")
-        upload_gold_to_s3(df_gold, yesterday, os.getenv("AWS_BRONZE_BUCKET"), local_gold_file)
+        # Load to S3
+        upload_gold_to_s3(df_gold, yesterday, os.getenv("AWS_BUCKET"), local_gold_file)
         
-        logger.info(f"🎉 Gold layer finalized for {yesterday}")
+        logger.info(f"🎉 Successfully loaded and upserted Gold metrics for {yesterday}")
         return True
 
+
     except Exception as e:
-        logger.error(f"Analytics/Gold generation failed for {yesterday}: {e}")
+        logger.error(f"Gold generation failed for {yesterday}: {e}")
         return False
         
     finally:
@@ -73,34 +112,3 @@ def upload_gold_to_s3(df_gold, yesterday, bucket_name, local_gold_file):
     except Exception as e:
         logger.error(f"Error uploading to S3: {e}")
         raise e
-
-def load_gold_to_postgres(df_gold):
-    # Check if DB credentials exist before trying to connect
-    db_host = os.getenv("DB_HOST")
-    if not db_host:
-        logger.info("Database credentials not found. Skipping Postgres load (running in Cloud mode).")
-        return True # Not an error, just skipping Postgres load. 
-    conn = psycopg2.connect(
-        host=os.getenv("DB_HOST"), 
-        database=os.getenv("DB_NAME"), 
-        user=os.getenv("DB_USER"), 
-        password=os.getenv("DB_PASSWORD"), 
-        port=os.getenv("DB_PORT")
-    )
-    try:
-        with conn.cursor() as cur:
-            metric_data = [tuple(x) for x in df_gold[['trading_date', 'ticker', 'daily_return', 'intraday_volatility']].to_numpy()]
-            execute_values(cur, """
-                INSERT INTO market_metrics (trading_date, ticker, daily_return, intraday_volatility)
-                VALUES %s
-                ON CONFLICT (ticker, trading_date) DO UPDATE SET 
-                    daily_return = EXCLUDED.daily_return, intraday_volatility = EXCLUDED.intraday_volatility;
-            """, metric_data)
-            conn.commit()
-            logger.info("Successfully loaded Gold metrics into Postgres.")
-        return True
-    except Exception as e:
-        logger.error(f"Postgres load failed: {e}")
-        return False
-    finally:
-        conn.close()

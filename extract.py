@@ -15,7 +15,7 @@ load_dotenv()
 # Constants
 TICKERS = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA", "GOOGL", "AMZN", "META", "AVGO", "INTC"]
 S3_REGION = "us-east-1"
-BUCKET_NAME = os.getenv("AWS_BRONZE_BUCKET")
+BUCKET_NAME = os.getenv("AWS_BUCKET")
 
 # Initialize S3 client once at the module level
 s3_client = boto3.client(
