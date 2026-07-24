@@ -5,23 +5,34 @@ import boto3
 from dotenv import load_dotenv
 from validate import validate_bronze_data
 import pandas as pd
+from botocore.exceptions import ClientError
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Global S3 client
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name="us-east-1"
-)
+# Constants
+S3_REGION = "us-east-1"
+BUCKET_NAME = os.getenv("AWS_BUCKET")
+
+def get_verified_s3_client():
+    
+    # Let boto3 resolve standard environment variables, supplying region explicitly
+    client = boto3.client('s3', region_name=S3_REGION)
+    
+    try:
+        client.head_bucket(Bucket=BUCKET_NAME)
+        logger.info(f"Successfully verified access to S3 bucket.")
+    except ClientError as e:
+        raise RuntimeError(f"Pipeline startup aborted: Cannot access S3 bucket. {e}")
+        
+    return client
 
 def transform_bronze_to_silver(bronze_s3_key, yesterday):
+    # Initialize and verify S3 client
+    s3_client = get_verified_s3_client()
 
-    bucket_name = os.getenv("AWS_BUCKET")
     local_silver_file = f"temp_silver_{yesterday}.parquet"
     local_bronze_file = f"temp_bronze_{yesterday}.json"
     local_duckdb_file = "stock_raw.duckdb"
@@ -33,24 +44,42 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
     try:
         # 1. Download persistent DuckDB file from S3 if it exists
         try:
-            s3_client.download_file(bucket_name, duckdb_s3_key, local_duckdb_file)
+            s3_client.download_file(BUCKET_NAME, duckdb_s3_key, local_duckdb_file)
             logger.info("Successfully downloaded existing stock_raw.duckdb from S3.")
-        except Exception:
-            logger.info("No existing stock_raw.duckdb found in S3. A new one will be created.")
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                logger.info("No existing stock_raw.duckdb found in S3. A new one will be created.")
+            else:
+                raise RuntimeError(f"🛑 Failed to check/download stock_raw.duckdb: {e}")
 
         #2 Validate Bronze Data
-        s3_client.download_file(bucket_name, bronze_s3_key, local_bronze_file)
+        s3_client.download_file(BUCKET_NAME, bronze_s3_key, local_bronze_file)
 
-        df=pd.read_json(local_bronze_file)
-        if not validate_bronze_data(df):
-            logger.error("🛑 Data Quality Check Failed. Aborting Transformation.")
-            return None
+        df_check = pd.read_json(local_bronze_file)
+        if not validate_bronze_data(df_check):
+            raise RuntimeError("🛑 Data Quality Check Failed. Aborting Transformation.")
 
-        # 3. Connect to DuckDB Warehouse and perform combined Transform & Upsert
+        # 3. Transform ONCE with DuckDB, producing a single clean DataFrame
+        #    used for both the DuckDB warehouse upsert and the Silver parquet file.
+        with duckdb.connect() as con:
+            silver_df = con.execute(f"""
+                SELECT
+                    CAST("from" AS DATE) as trading_date,
+                    symbol as ticker,
+                    open::DOUBLE as open_price,
+                    high::DOUBLE as high_price,
+                    low::DOUBLE as low_price,
+                    close::DOUBLE as close_price,
+                    volume::BIGINT as volume,
+                    afterHours::DOUBLE as after_hours,
+                    preMarket::DOUBLE as pre_market
+                FROM read_json_auto('{local_bronze_file}')
+                WHERE status = 'OK'
+            """).df()
+ 
+        # 4. Connect to persistent DuckDB Warehouse and upsert the transformed data
         con = duckdb.connect(local_duckdb_file)
-
         try:
-            # Ensure master table exists with proper primary key for upserts
             con.execute("""
                 CREATE TABLE IF NOT EXISTS stock_prices (
                     trading_date DATE,
@@ -65,67 +94,45 @@ def transform_bronze_to_silver(bronze_s3_key, yesterday):
                     PRIMARY KEY (ticker, trading_date)
                 )
             """)
-
-            # Parse, clean, and upsert straight from the JSON source file into DuckDB
-            con.execute(f"""
+ 
+            con.register("silver_df", silver_df)
+            con.execute("""
                 INSERT INTO stock_prices (
-                    trading_date, ticker, open_price, high_price, 
+                    trading_date, ticker, open_price, high_price,
                     low_price, close_price, volume, after_hours, pre_market
                 )
-                SELECT 
-                    CAST("from" AS DATE) as trading_date,
-                    symbol as ticker,
-                    open::DOUBLE as open_price,
-                    high::DOUBLE as high_price,
-                    low::DOUBLE as low_price,
-                    close::DOUBLE as close_price,
-                    volume::BIGINT as trading_volume,
-                    afterHours::DOUBLE as after_hours,
-                    preMarket::DOUBLE as pre_market
-                FROM read_json_auto('{local_bronze_file}')
-                WHERE status = 'OK'
-                ON CONFLICT (ticker, trading_date) DO UPDATE SET 
-                    open_price = EXCLUDED.open_price, 
-                    high_price = EXCLUDED.high_price, 
-                    low_price = EXCLUDED.low_price, 
-                    close_price = EXCLUDED.close_price, 
-                    volume = EXCLUDED.volume, 
-                    after_hours = EXCLUDED.after_hours, 
+                SELECT
+                    trading_date, ticker, open_price, high_price,
+                    low_price, close_price, volume, after_hours, pre_market
+                FROM silver_df
+                ON CONFLICT (ticker, trading_date) DO UPDATE SET
+                    open_price = EXCLUDED.open_price,
+                    high_price = EXCLUDED.high_price,
+                    low_price = EXCLUDED.low_price,
+                    close_price = EXCLUDED.close_price,
+                    volume = EXCLUDED.volume,
+                    after_hours = EXCLUDED.after_hours,
                     pre_market = EXCLUDED.pre_market;
             """)
             logger.info("Successfully loaded and upserted Silver data into DuckDB warehouse.")
-            
         finally:
             con.close()
         
-        # 4. Generate Parquet for S3 Silver Layer using an ephemeral DuckDB query
-        with duckdb.connect() as con:
-            silver_df = con.execute(f"""
-                SELECT 
-                    CAST("from" AS DATE) as trading_date,
-                    symbol as ticker,
-                    open::DOUBLE as open_price,
-                    high::DOUBLE as high_price,
-                    low::DOUBLE as low_price,
-                    close::DOUBLE as close_price,
-                    volume::BIGINT as trading_volume,
-                    afterHours::DOUBLE as after_hours,
-                    preMarket::DOUBLE as pre_market
-                FROM read_json_auto('{local_bronze_file}')
-                WHERE status = 'OK'
-            """).df()
-        
         # 5. Upload parquet to S3 Silver & Backup DuckDB to S3
         silver_df.to_parquet(local_silver_file)
-        s3_client.upload_file(local_silver_file, bucket_name, f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet")        
-        s3_client.upload_file(local_duckdb_file, bucket_name, duckdb_s3_key)
+        
+        # 6. Upload parquet to S3 Silver & back up DuckDB warehouse to S3
+        try:
+            s3_client.upload_file(local_silver_file, BUCKET_NAME, f"silver/stocks/date={yesterday}/stocks_clean_{yesterday}.parquet")        
+            s3_client.upload_file(local_duckdb_file, BUCKET_NAME, duckdb_s3_key)
+        except Exception as e:
+            raise RuntimeError(f"🛑 AWS S3 Upload failed for {yesterday}: {e}")
 
         logger.info(f"🥈 Silver layer and DuckDB load complete for {yesterday}")
         return silver_s3_key
 
     except Exception as e:
-        logger.error(f"Transformation/Load failed for {yesterday}: {e}")
-        return None
+        raise RuntimeError(f"🛑 Transformation/Load failed for {yesterday}: {e}")
         
     finally:
         if os.path.exists(local_bronze_file):

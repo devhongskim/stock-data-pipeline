@@ -1,6 +1,7 @@
 from airflow.decorators import dag, task
 from datetime import datetime, timedelta
 import pandas_market_calendars as mcal
+from airflow.exceptions import AirflowSkipException
 
 # Import your actual pipeline functions from your modules
 from extract import fetch_stock_data
@@ -19,13 +20,14 @@ default_args = {
     schedule='30 5 * * 2-6',
     start_date=datetime(2026, 7, 20),
     catchup=False,
+    max_active_runs=1,
     tags=['finance', 'stock_data', 'medallion'],
 )
 def stock_market_pipeline():
 
     @task
     def check_market_calendar(**context):
-        """1. GATEKEEPER: Check Market Schedule matching main.py logic (previous day offset)"""
+        """GATEKEEPER: Check Market Schedule matching main.py logic (previous day offset)"""
         # Use Airflow's logical execution date (ds), falling back to yesterday if run ad-hoc
         logical_ds = context.get('ds')
         if logical_ds:
@@ -33,7 +35,6 @@ def stock_market_pipeline():
         else:
             base_date = datetime.now()
             
-        # Match main.py offset behavior to evaluate the correct target session
         target_date_obj = base_date - timedelta(days=1)
         target_date = target_date_obj.strftime('%Y-%m-%d')
         #target_date = "2026-07-17"  # Hardcoded for testing
@@ -42,46 +43,22 @@ def stock_market_pipeline():
         valid_days = nyse.valid_days(start_date=target_date, end_date=target_date)
         
         if len(valid_days) == 0:
-            print(f"🛑 Central Optimization Gate: {target_date} was a weekend or holiday. Skipping.")
-            return None
+            raise AirflowSkipException(f"🛑 {target_date} was a weekend or holiday.")
         
         print(f"🟢 Market was OPEN on {target_date}. Proceeding...")
         return target_date
 
     @task
     def run_extraction(target_date):
-        if not target_date:
-            return None
-        
-        bronze_key = fetch_stock_data(target_date, force_overwrite=False) # Keep True for testing. False in production.
-        
-        if not bronze_key:
-            raise ValueError("🛑 Bronze Extraction failed.")
-                
-        return bronze_key
+        return fetch_stock_data(target_date, force_overwrite=False) # Keep True for testing. False in production.
 
     @task
     def run_transformation(bronze_key, target_date):
-        """3. TRANSFORMATION PHASE: Calls your transform_bronze_to_silver"""
-        if not bronze_key or not target_date:
-            return None
-            
-        silver_key = transform_bronze_to_silver(bronze_key, target_date)
-        if not silver_key:
-            raise ValueError("🛑 Silver Transformation failed.")
-        return silver_key
+        return transform_bronze_to_silver(bronze_key, target_date)
 
     @task
     def run_analytics(silver_key, target_date):
-        """4. ANALYTICS PHASE: Calls your generate_gold_metrics"""
-        if not silver_key or not target_date:
-            return False
-            
-        # Calls your exact function from analytics.py
-        gold_success = generate_gold_metrics(silver_key, target_date)
-        if not gold_success:
-            raise ValueError("🛑 Gold Metrics generation failed.")
-        return True
+        generate_gold_metrics(silver_key, target_date)
 
     # --- Workflow Dependencies Wiring ---
     market_date = check_market_calendar()

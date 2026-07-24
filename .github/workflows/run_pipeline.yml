@@ -1,11 +1,8 @@
 name: Weekday Cloud Stock Data Pipeline
 
 on:
-  schedule:
-    # Runs at 01:30 UTC every Tuesday through Saturday 
-    # (Captures the previous day's market data)
-    - cron: '30 1 * * 2-6'
-      timezone: 'America/New_York'
+  # schedule:
+  #   - cron: '30 5 * * 2-6'
   workflow_dispatch:
 
 jobs:
@@ -32,7 +29,7 @@ jobs:
         POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_BRONZE_BUCKET: ${{ secrets.AWS_BRONZE_BUCKET }}
+        AWS_BRONZE_BUCKET: ${{ secrets.AWS_BUCKET }}
         
       run: |
         python main.py
