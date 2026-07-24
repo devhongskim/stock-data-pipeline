@@ -15,8 +15,8 @@ def run_pipeline(force_overwrite=False):
     logger.info("🚀 STARTING AUTOMATED CLOUD PIPELINE EXECUTION")
     
     # Calculate yesterday's date
-    #yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    yesterday = "2026-07-17"
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    #yesterday = "2026-07-17" #hardcode for testing
     
     # 1. GATEKEEPER: Check Market Schedule
     nyse = mcal.get_calendar('NYSE')
@@ -30,26 +30,15 @@ def run_pipeline(force_overwrite=False):
     
     # 2. STAGE EXECUTION
     try:
-        #EXTRACTION PHASE
         logger.info("--- Starting Stage: Extraction ---")
         bronze_path = fetch_stock_data(yesterday, force_overwrite=force_overwrite)
-        if bronze_path is None:
-            logger.error("🛑 Bronze Extraction failed. Aborting pipeline.")
-            sys.exit(1)
         
-        #TRANSFORMATION PHASE
         logger.info("--- Starting Stage: Transformation ---")
         silver_path = transform_bronze_to_silver(bronze_path, yesterday)
-        if silver_path is None:
-            logger.error("🛑 Silver Transformation failed. Aborting pipeline.")
-            sys.exit(1)
 
         # Analytics Stage
         logger.info("--- Starting Stage: Analytics/Load ---")
         gold_success = generate_gold_metrics(silver_path, yesterday)   
-        if not gold_success:
-            logger.error("🛑 Gold Metrics generation/load failed. Aborting pipeline.")
-            sys.exit(1)
          
     except Exception as e:
         logger.error(f"💥 Pipeline Failure: {e}", exc_info=True)
