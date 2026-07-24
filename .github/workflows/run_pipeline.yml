@@ -1,13 +1,46 @@
 name: Weekday Cloud Stock Data Pipeline
 
 on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   # schedule:
   #   - cron: '30 5 * * 2-6'
   workflow_dispatch:
 
 jobs:
-  run-pipeline:
+  # 1. CI Unit Tests: Automatically runs on every push and pull request
+  test:
+    name: Run Unit Tests
     runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository Code
+      uses: actions/checkout@v5
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Project Dependencies & Test Tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-mock
+
+    - name: Run Pytest Suite
+      run: |
+        pytest -v
+
+  # 2. Pipeline Execution: Only runs on manual dispatch and requires tests to pass first
+  run-pipeline:
+    name: Execute Pipeline
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
     - name: Checkout Repository Code
@@ -29,7 +62,7 @@ jobs:
         POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_BRONZE_BUCKET: ${{ secrets.AWS_BUCKET }}
+        AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
         
       run: |
         python main.py
