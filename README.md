@@ -29,6 +29,10 @@ The pipeline runs as an Airflow DAG (`stock_market_data_daily`), scheduled Tuesd
 1. **`check_market_calendar`** — gatekeeper task using `pandas_market_calendars` (NYSE) to confirm the target date was a trading day. If the market was closed, this task raises `AirflowSkipException`, and all downstream tasks are automatically skipped rather than running as a no-op — so DAG run history accurately reflects which days processed real data.
 2. **`run_extraction`** → **`run_transformation`** → **`run_analytics`** — chained tasks calling `fetch_stock_data`, `transform_bronze_to_silver`, and `generate_gold_metrics` respectively, passing S3 keys (not local file paths) between tasks so each stage is safely retryable regardless of which worker executes it.
 
+Each stage independently checks whether **its own** output already exists in S3 before doing any work (unless `force_overwrite` is set). This means a partially-completed run — e.g. Bronze and Silver already exist but Gold was manually deleted — self-heals on the next run without any special-casing: each stage only asks "does my output exist?", not "did the pipeline already run?"
+
+To force a specific historical date to re-run, use Airflow's **Trigger DAG w/ config** and set the logical date to one day after the trading date you want (the DAG subtracts a day to capture the previous session's data) — no code changes or hardcoded dates required.
+
 `max_active_runs=1` ensures only one DAG run executes at a time, since Bronze/Silver/Gold stages upsert into shared, persistent DuckDB files in S3.
 
 Run locally with the Astro CLI:
@@ -57,9 +61,33 @@ The pipeline uses lightweight, embedded DuckDB warehouses for fast columnar stor
 
 Each run downloads the current warehouse file from S3 (if it exists), upserts the day's data, and re-uploads the updated file — so the warehouse accumulates history across runs rather than starting fresh each time.
 
+## 📈 Scaling Considerations
+The current design (10 tickers, 1 API, daily batch) is intentionally simple, but every component has a known breaking point. Here's how each layer would need to evolve at greater scale, and why:
+
+### Data Volume: 10 tickers → thousands
+- **Current**: `TICKERS` is a hardcoded Python list of 10 symbols, looped synchronously with a 1-second delay between calls.
+- **Breaking point**: At ~5,000 tickers with a 1-second-per-call floor, a single day's extraction alone would take over an hour — before accounting for rate-limit backoff. This doesn't scale linearly with ticker count in a way that fits a short daily batch window.
+- **Next step**: Move from a hardcoded list to a ticker universe stored in S3/a database, and parallelize extraction with `asyncio`/`aiohttp` or a worker pool, respecting the API's actual rate limit (requests/second) rather than a flat per-call sleep. Airflow's dynamic task mapping (`.expand()`) is a natural fit here — one mapped task instance per ticker or per batch of tickers, each independently retryable.
+
+### API Constraints
+- **Current**: All-or-nothing per run — a single failed ticker aborts the whole extraction (a deliberate tradeoff made early on, to keep bronze data all-or-nothing consistent for a given date).
+- **At scale**: With thousands of tickers, one bad symbol shouldn't sink the whole batch. The tradeoff would flip: partial extraction (log and skip failed tickers, alert on the failure rate) becomes the right default, with the validation gate (`validate_bronze_data`) doing the job of catching whether the *shortfall* is acceptable, rather than a single ticker doing it.
+- **Next step**: Track a per-run success/failure ratio and fail the pipeline only if that ratio crosses a threshold (e.g. >5% of tickers failed), rather than on any single failure.
+
+### Storage & Compute: DuckDB-in-S3 → a real warehouse
+- **Current**: Each run downloads a full DuckDB file from S3, upserts locally, and re-uploads the whole file. This works well at the current scale (single-digit MBs) because DuckDB is fast and the file is small enough to move over the network cheaply on every run.
+- **Breaking point**: This pattern doesn't scale with warehouse size — a multi-GB DuckDB file downloaded and re-uploaded on every single run (even for one day's worth of upserts) becomes slow and expensive, and creates exactly the concurrent-write risk `max_active_runs=1` currently guards against by brute force (serializing all runs).
+- **Next step**: Migrate to a warehouse designed for concurrent, incremental writes — Snowflake, BigQuery, or Athena directly over the Silver/Gold Parquet files in S3 (using Hive-style `date=` partitioning, which the project already uses). This removes the "download the whole warehouse" bottleneck entirely and unlocks genuinely concurrent runs instead of serializing everything through `max_active_runs=1`.
+
+### Orchestration & Reliability
+- **Current**: A single linear DAG (`extract → transform → analytics`), one run per weekday, `max_active_runs=1`.
+- **At scale**: A single serialized DAG run won't parallelize across thousands of tickers or multiple markets/asset classes. Backfills (like the one used to fill in early July's missing dates) would also take proportionally longer under full serialization.
+- **Next step**: Dynamic task mapping for per-ticker (or per-batch) parallelism within a run; separate DAGs per asset class or exchange if the data sources diverge; and moving from "one big DuckDB file" concurrency-by-serialization to a warehouse that supports real concurrent writes (see above), which is what would actually let `max_active_runs=1` be relaxed safely.
+
 ## 🚀 Future Roadmap
-- [ ] **Scalability**: Implement Apache Spark for distributed processing.
-- [ ] **Data Quality**: Integrate Great Expectations for automated testing.
+- [ ] **Scalability**: Dynamic task mapping in Airflow for per-ticker parallelism; migrate warehousing off single-file DuckDB to Snowflake/BigQuery/Athena (see [Scaling Considerations](#-scaling-considerations)).
+- [ ] **Observability**: Failure alerting via Airflow's `on_failure_callback` (Slack/email).
+- [ ] **Data Quality**: Integrate Great Expectations for automated testing, with results logged to a queryable table rather than pass/fail only.
 - [ ] **Infrastructure**: Use Terraform to manage cloud resources (IaC).
 
 ## 📦 How to Run
