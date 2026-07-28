@@ -7,11 +7,13 @@ import pandas_market_calendars as mcal
 from extract import fetch_stock_data, get_verified_s3_client, check_exists, BUCKET_NAME
 from transform import transform_bronze_to_silver
 from analytics import generate_gold_metrics
+from alerts import send_failure_alert
 
 default_args = {
     'owner': 'airflow',
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
+    'on_failure_callback': send_failure_alert,
 }
 
 @dag(
@@ -36,7 +38,6 @@ def stock_market_pipeline():
 
         target_date_obj = base_date - timedelta(days=1)
         target_date = target_date_obj.strftime('%Y-%m-%d')
-        
 
         nyse = mcal.get_calendar('NYSE')
         valid_days = nyse.valid_days(start_date=target_date, end_date=target_date)

@@ -21,7 +21,24 @@ This pipeline demonstrates a production-ready approach to ETL/ELT, moving data f
 | **Data Source** | Polygon.io API |
 
 ## 🏗 Pipeline Architecture
-Polygon.io API → AWS S3 (Bronze / Raw JSON) → DuckDB `stock_raw.duckdb` + Silver Parquet → DuckDB `stock_metrics.duckdb` + Gold Parquet → BI & Analytics
+
+```mermaid
+flowchart LR
+    API["Polygon.io API"] -->|extract.py| Bronze["Bronze — S3\nRaw JSON\ndate= partitioned"]
+    Bronze -->|transform.py\n+ validate.py| Silver["Silver — S3 + DuckDB\nstock_raw.duckdb\nClean Parquet"]
+    Silver -->|analytics.py| Gold["Gold — S3 + DuckDB\nstock_metrics.duckdb\nDaily Return / Volatility"]
+    Gold --> BI["BI & Analytics"]
+
+    Airflow["Airflow DAG\nstock_market_data_daily"] -.orchestrates.-> Bronze
+    Airflow -.orchestrates.-> Silver
+    Airflow -.orchestrates.-> Gold
+    Airflow -.on failure.-> Slack["Slack Alert"]
+
+    classDef stage fill:#f5f5f5,stroke:#888,stroke-width:1px;
+    class Bronze,Silver,Gold stage;
+```
+
+Each stage independently checks whether its own S3 output already exists before running (idempotency gates), so re-running a date that's already fully processed is a fast no-op, and a partially-completed run (e.g. Bronze exists but Gold was deleted) self-heals on the next run.
 
 ## 🪁 Orchestration
 The pipeline runs as an Airflow DAG (`stock_market_data_daily`), scheduled Tuesday–Saturday to capture the previous trading day's data:
