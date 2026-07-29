@@ -6,7 +6,7 @@ A professional-grade data engineering pipeline designed to ingest, process, and 
 
 This repository includes supplementary engineering documentation describing how the pipeline evolved over time and the reasoning behind key architectural decisions.
 
-- **[Architecture Evolution & Design Decisions](Architecture%20Evolution%20&%20Design%20Decisions.md)** — Documents the major architectural milestones, trade-offs, and rationale behind each iteration of the pipeline, from local scripts to a cloud-native, Airflow-orchestrated data platform.
+- **[Architecture Evolution & Design Decisions](Architecture_Evolution_Design_Decisions.md)** — Documents the major architectural milestones, trade-offs, and rationale behind each iteration of the pipeline, from local scripts to a cloud-native, Airflow-orchestrated data platform.
 
 ## 🚀 Project Overview
 This pipeline demonstrates a production-ready approach to ETL/ELT, moving data from the Polygon.io API into a structured, reliable format.
