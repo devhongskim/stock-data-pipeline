@@ -8,7 +8,7 @@ This document traces the chronological evolution, technical trade-offs, and arch
 
 | Layer | Where it started | Where it landed |
 |---|---|---|
-| **Storage** | Local disk | AWS S3 + embedded DuckDB warehouses |
+| **Storage** | Local disk | AWS S3 + embedded DuckDB databases |
 | **Orchestration** | Manual `python main.py` | Apache Airflow via Astro CLI |
 | **Idempotency** | Unconditional overwrites | Per-layer existence checks + self-healing |
 | **Observability** | `print()` statements | Structured logging + Slack alerting |
@@ -17,16 +17,16 @@ This document traces the chronological evolution, technical trade-offs, and arch
 
 ## 1. Storage & Persistence Layer
 
-The storage tier evolved from local disk I/O to a cloud-native, serverless-friendly Medallion architecture.
+The storage tier evolved from local disk I/O to a cloud-native, serverless-friendly Medallion architecture, with each iteration reducing operational overhead while improving durability, portability, and analytical capability.
 
 | Phase | Design |
 |---|---|
-| **1 — Local File System** | Raw JSON extracts and processed Parquet files saved directly to disk. |
-| **2 — Introduction of PostgreSQL** | Postgres added to house aggregate data in a queryable state, while raw files stayed local. |
-| **3 — Cloud Migration to AWS S3** | File storage decoupled from local execution and migrated entirely to S3; Postgres continued managing structured/aggregate layers. |
-| **4 — Retiring Postgres for Embedded DuckDB on S3** | Postgres fully deprecated in favor of embedded DuckDB warehouses backed by S3. |
+| **1 — Local File System** | Raw JSON extracts and processed Parquet datasets stored directly on the local filesystem. |
+| **2 — PostgreSQL Integration** | PostgreSQL introduced to maintain a persistent, queryable analytical store, while raw files remained on local disk. |
+| **3 — Cloud Migration to AWS S3** | Bronze, Silver, and Gold datasets migrated to AWS S3 using date-partitioned storage, decoupling persistent data from the execution environment. PostgreSQL continued serving as the analytical engine. |
+| **4 — Embedded DuckDB + S3** | PostgreSQL replaced with embedded DuckDB databases (`stock_raw.duckdb` and `stock_metrics.duckdb`). DuckDB performs relational processing and incremental upserts, while partitioned Parquet datasets and DuckDB database files are persisted to S3 as durable cloud storage. |
 
-**Rationale:** For a single-node, daily batch pipeline processing manageable volumes of financial data, maintaining an external Postgres container added unnecessary operational overhead and connection-management complexity. DuckDB provides high-performance columnar analytical execution locally, while S3 delivers durable, portable storage via file-based state synchronization.
+**Rationale:** The original PostgreSQL design introduced operational overhead that wasn't justified for a single-node, daily batch workload. Migrating to DuckDB eliminated the need to manage a separate database server while retaining SQL-based transformations and efficient analytical queries. AWS S3 remains the system's durable storage layer, with DuckDB serving as a lightweight embedded analytical engine that synchronizes state between pipeline runs.
 
 ---
 
@@ -40,7 +40,7 @@ The execution model progressed from manual invocation to scheduled cloud automat
 | **2 — GitHub Actions & Cron** | Automated remote execution via GitHub Actions + cron, with custom calendar logic validating market open/closed status before running. |
 | **3 — Apache Airflow (via Astro CLI)** | Fully orchestrated Airflow environment (`stock_market_data_daily` DAG). |
 
-**Rationale:** Airflow introduced native retry policies, visual dependency graphs, task-level isolation, and dynamic scheduling capabilities that cron-based GitHub Actions cannot support at scale.
+**Rationale:** Airflow introduced task-level retries, dependency management, execution isolation, DAG visualization, and scheduling capabilities that cron-based GitHub Actions cannot provide.
 
 ---
 
