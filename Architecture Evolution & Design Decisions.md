@@ -1,8 +1,6 @@
-# 📐 Architecture Decision Log
+# 📐 Architecture Evolution & Design Decisions
 
 This document traces the chronological evolution, technical trade-offs, and architectural pivots made throughout development of the Cloud-Native Stock Market ETL Pipeline — how the system matured from a basic local script into a production-grade, cloud-native data pipeline.
-
-> For the granular bug list and discovery process behind these decisions, see [`ENGINEERING_LOG.md`](ENGINEERING_LOG.md).
 
 ## At a Glance
 
