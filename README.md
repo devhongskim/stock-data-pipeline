@@ -2,6 +2,12 @@
 
 A professional-grade data engineering pipeline designed to ingest, process, and analyze stock market data. This project implements a Medallion Architecture to move data from raw ingestion to analytics-ready datasets, utilizing a cloud-first approach with AWS S3, embedded DuckDB analytical stores, and Apache Airflow orchestration.
 
+## 📚 Additional Documentation
+
+This repository includes supplementary engineering documentation describing how the pipeline evolved over time and the reasoning behind key architectural decisions.
+
+- **[Architecture Evolution & Design Decisions](Architecture_Evolution_&_Design_Decisions.md)** — Documents the major architectural milestones, trade-offs, and rationale behind each iteration of the pipeline, from local scripts to a cloud-native, Airflow-orchestrated data platform.
+
 ## 🚀 Project Overview
 This pipeline demonstrates a production-ready approach to ETL/ELT, moving data from the Polygon.io API into a structured, reliable format.
 
