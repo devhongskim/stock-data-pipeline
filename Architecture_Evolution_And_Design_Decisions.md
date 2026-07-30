@@ -10,6 +10,7 @@ This document traces the chronological evolution, technical trade-offs, and arch
 | **Orchestration** | Manual `python main.py` | Apache Airflow via Astro CLI |
 | **Idempotency** | Unconditional overwrites | Per-layer existence checks + self-healing |
 | **Observability** | `print()` statements | Structured logging + Slack alerting |
+| **Infrastructure** | Manual provisioning (console / `boto3`) | Terraform-managed, imported from existing state |
 
 ---
 
@@ -67,3 +68,22 @@ Observability transitioned from raw standard output to structured logging and pr
 | **4 — Proactive Slack Alerting** | Automated failure notifications via an Airflow `on_failure_callback` tied to a Slack Incoming Webhook. |
 
 **Defensive design:** The alerting client wraps its Slack call in an isolated `try/except`, so a network disruption or misconfigured webhook can never crash the underlying pipeline task — a broken alert should never become a second failure.
+
+---
+
+## 5. Infrastructure as Code
+
+Infrastructure provisioning progressed from manual, undocumented setup to a declarative, version-controlled configuration.
+
+| Phase | Design |
+|---|---|
+| **1 — Manual Provisioning** | The S3 bucket was created directly through the AWS Console / `boto3`, with no record of its configuration outside of the AWS account itself. |
+| **2 — Terraform Adoption via Import** | The existing bucket was brought under Terraform management using `terraform import`, rather than being recreated — adopting real, already-running infrastructure into code without downtime or data loss. |
+
+**Rationale:** Since the bucket already existed and held real pipeline data, a greenfield `terraform apply` was never an option — creating a same-named bucket from scratch would have failed outright, since S3 bucket names are globally unique. `terraform import` bridges this gap: it links an existing AWS resource to a new Terraform-managed resource block, after which `terraform plan`/`apply` behave exactly as if Terraform had provisioned it from day one.
+
+**A concrete outcome of this migration:** importing the bucket surfaced a latent bug — the pipeline's AWS region had been hardcoded as `us-east-1` in the application code, while the bucket itself was actually provisioned in `us-east-2`. This had gone unnoticed because S3's client-side region handling is comparatively lenient for basic object operations, whereas Terraform's AWS provider is stricter and surfaced the mismatch immediately. Fixed by aligning `S3_REGION` across the codebase and `providers.tf` to the bucket's real region.
+
+**Least-privilege IAM, discovered iteratively:** The pipeline's IAM user was originally scoped to only what the application code needed (`GetObject`, `PutObject`, `ListBucket`). Bringing Terraform into the picture required additional permissions the application never needed directly — reading bucket policy, tags, and public-access-block configuration, and writing tags. Rather than granting a broad managed policy (e.g. `AmazonS3FullAccess`) to sidestep this, each additional permission was added one at a time as Terraform's `import`/`plan`/`apply` surfaced exactly which `AccessDenied` error it hit next — resulting in a scoped, bucket-specific policy containing only what Terraform genuinely requires.
+
+**Result:** `terraform plan` now serves as a standing drift-detection tool — a way to verify at any time that the bucket's real-world configuration (tags, public access block) still matches what's declared in code, independent of whether changes were made through Terraform, the AWS Console, or another tool.

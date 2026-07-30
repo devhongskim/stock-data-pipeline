@@ -1,12 +1,12 @@
 # Cloud-Native Stock Market ETL Pipeline
 
-A professional-grade data engineering pipeline designed to ingest, process, and analyze stock market data. This project implements a Medallion Architecture to move data from raw ingestion to analytics-ready datasets, utilizing a cloud-first approach with AWS S3, embedded DuckDB analytical stores, and Apache Airflow orchestration.
+A professional-grade data engineering pipeline designed to ingest, process, and analyze stock market data. This project implements a Medallion Architecture to move data from raw ingestion to analytics-ready datasets, utilizing a cloud-first approach with AWS S3, embedded DuckDB analytical stores, Apache Airflow orchestration, and Terraform-managed infrastructure.
 
 ## 📚 Additional Documentation
 
 This repository includes supplementary engineering documentation describing how the pipeline evolved over time and the reasoning behind key architectural decisions.
 
-- **[Architecture Evolution & Design Decisions](Architecture_Evolution_And_Design_Decisions.md)** — Documents the major architectural milestones, trade-offs, and rationale behind each iteration of the pipeline, from local scripts to a cloud-native, Airflow-orchestrated data platform.
+- **[Architecture Evolution & Design Decisions](Architecture_Evolution_And_Design_Decisions.md)** — Documents the major architectural milestones, trade-offs, and rationale behind each iteration of the pipeline, from local scripts to a cloud-native, Airflow-orchestrated, Terraform-managed data platform.
 
 ## 🚀 Project Overview
 This pipeline demonstrates a production-ready approach to ETL/ELT, moving data from the Polygon.io API into a structured, reliable format.
@@ -24,6 +24,7 @@ This pipeline demonstrates a production-ready approach to ETL/ELT, moving data f
 | **Data Format** | JSON, Parquet |
 | **Data Analysis** | Pandas |
 | **Orchestration** | Apache Airflow (via Astro CLI) |
+| **Infrastructure as Code** | Terraform |
 | **Data Source** | Polygon.io API |
 
 ## 🏗 Pipeline Architecture
@@ -65,6 +66,21 @@ astro dev start
 
 A standalone `main.py` entrypoint is also included for running the full pipeline outside of Airflow (e.g. local testing, ad-hoc backfills).
 
+## 🧱 Infrastructure as Code (Terraform)
+The project's AWS S3 bucket is managed via Terraform, under the `terraform/` directory:
+
+| File | Purpose |
+| :--- | :--- |
+| `providers.tf` | Configures the AWS provider and required Terraform version. |
+| `variables.tf` | Declares the `bucket_name` input variable. |
+| `main.tf` | Defines the `aws_s3_bucket` resource (with standard tagging) and an `aws_s3_bucket_public_access_block` resource enforcing that the bucket is never publicly accessible. |
+| `outputs.tf` | Exposes the bucket's ARN and name as Terraform outputs. |
+| `terraform.tfvars.example` | Template for the (gitignored) `terraform.tfvars` file that supplies the real bucket name locally. |
+
+Since the S3 bucket already existed (created via `boto3` before Terraform was introduced), it was brought under Terraform's management with `terraform import` rather than recreated — adopting existing infrastructure without downtime or data loss. This also surfaced the exact minimal set of IAM permissions Terraform needs beyond what the pipeline itself uses (e.g. `s3:GetBucketPolicy`, `s3:PutBucketTagging`), which were added to the pipeline's IAM user as a scoped, bucket-specific policy rather than a broad managed policy like `AmazonS3FullAccess`.
+
+Running `terraform plan` now serves as a standing drift check — confirming the bucket's real-world configuration (tags, public access settings) still matches what's declared in code.
+
 ## ⚙️ Configuration
 Set the following environment variables (GitHub/Astro secrets or a local `.env`):
 
@@ -99,8 +115,8 @@ The current design (10 tickers, 1 API, daily batch) is intentionally simple, but
 
 ### Storage & Compute: DuckDB-in-S3 → a real warehouse
 - **Current**: Each run downloads a full DuckDB file from S3, upserts locally, and re-uploads the whole file. This works well at the current scale (single-digit MBs) because DuckDB is fast and the file is small enough to move over the network cheaply on every run.
-- **Breaking point**: This pattern doesn't scale with warehouse size — a multi-GB DuckDB file downloaded and re-uploaded on every single run (even for one day's worth of upserts) becomes slow and expensive, and creates exactly the concurrent-write risk `max_active_runs=1` currently guards against by brute force (serializing all runs).
-- **Next step**: Migrate to a warehouse designed for concurrent, incremental writes — Snowflake, BigQuery, or Athena directly over the Silver/Gold Parquet files in S3 (using Hive-style `date=` partitioning, which the project already uses). This removes the "download the whole warehouse" bottleneck entirely and unlocks genuinely concurrent runs instead of serializing everything through `max_active_runs=1`.
+- **Breaking point**: This pattern doesn't scale with database size — a multi-GB DuckDB file downloaded and re-uploaded on every single run (even for one day's worth of upserts) becomes slow and expensive, and creates exactly the concurrent-write risk `max_active_runs=1` currently guards against by brute force (serializing all runs).
+- **Next step**: Migrate to a warehouse designed for concurrent, incremental writes — Snowflake, BigQuery, or Athena directly over the Silver/Gold Parquet files in S3 (using Hive-style `date=` partitioning, which the project already uses). This removes the "download the whole database file" bottleneck entirely and unlocks genuinely concurrent runs instead of serializing everything through `max_active_runs=1`.
 
 ### Orchestration & Reliability
 - **Current**: A single linear DAG (`extract → transform → analytics`), one run per weekday, `max_active_runs=1`.
@@ -109,9 +125,10 @@ The current design (10 tickers, 1 API, daily batch) is intentionally simple, but
 
 ## 🚀 Future Roadmap
 - [ ] **Scalability**: Dynamic task mapping in Airflow for per-ticker parallelism; migrate warehousing off single-file DuckDB to Snowflake/BigQuery/Athena (see [Scaling Considerations](#-scaling-considerations)).
-- [ ] **Observability**: Failure alerting via Airflow's `on_failure_callback` (Slack/email).
+- [x] **Observability**: Failure alerting via Airflow's `on_failure_callback` (Slack).
 - [ ] **Data Quality**: Integrate Great Expectations for automated testing, with results logged to a queryable table rather than pass/fail only.
-- [ ] **Infrastructure**: Use Terraform to manage cloud resources (IaC).
+- [x] **Infrastructure**: Use Terraform to manage cloud resources (IaC) — S3 bucket now under Terraform management via `terraform import`.
+- [ ] **Infrastructure (next)**: Extend Terraform to manage the pipeline's IAM policy itself, scoping it to least-privilege as code rather than via manual console edits.
 - [ ] **Lakehouse Format**: Evaluate Delta Lake or Apache Iceberg to add transactional table management, schema evolution, and time-travel capabilities on top of S3 Parquet storage.
 
 ## 📦 How to Run
@@ -129,6 +146,14 @@ The current design (10 tickers, 1 API, daily batch) is intentionally simple, but
    python main.py
    ```
    Or run the full pipeline via Airflow using the Astro CLI (`astro dev start`).
+5. **(Optional) Provision/adopt infrastructure via Terraform**:
+   ```bash
+   cd terraform
+   cp terraform.tfvars.example terraform.tfvars   # fill in your real bucket name
+   terraform init
+   terraform plan
+   terraform apply
+   ```
 
 ### Storage Strategy
 The Bronze layer utilizes date-based partitioning to optimize data retrieval and organization.

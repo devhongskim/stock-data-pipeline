@@ -1,0 +1,5 @@
+# Copy this file to terraform.tfvars and fill in your real bucket name.
+# terraform.tfvars is gitignored -- never commit it, since it can end up
+# holding real resource identifiers you may not want public.
+
+bucket_name = "your-actual-bucket-name"
