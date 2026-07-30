@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Constants
-S3_REGION = "us-east-1"
+S3_REGION = "us-east-2"
 BUCKET_NAME = os.getenv("AWS_BUCKET")
 
 def get_verified_s3_client():

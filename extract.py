@@ -14,7 +14,7 @@ load_dotenv()
 
 # Constants
 TICKERS = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA", "GOOGL", "AMZN", "META", "AVGO", "INTC"]
-S3_REGION = "us-east-1"
+S3_REGION = "us-east-2"
 BUCKET_NAME = os.getenv("AWS_BUCKET")
 
 #Initializes the S3 client and verifies bucket accessibility 
