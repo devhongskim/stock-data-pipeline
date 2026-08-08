@@ -15,7 +15,10 @@ plugins/
 .astro/
 
 terraform/.terraform/
-terraform/terraform.tfstate
-terraform/terraform.tfstate.backup
+terraform/*.tfstate
+terraform/*.tfstate.*
 terraform/terraform.tfvars
+terraform/*.tfvars
+terraform/crash.log
+terraform/crash.*.log
 terraform/.terraform.lock.hcl
