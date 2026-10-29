@@ -1,5 +1,9 @@
 # Cloud-Native Stock Market ETL Pipeline
 
+[![CI](https://github.com/devhongskim/stock-data-pipeline/actions/workflows/run_pipeline.yml/badge.svg)](https://github.com/devhongskim/stock-data-pipeline/actions/workflows/run_pipeline.yml)
+
+> Batch half of a two-project portfolio. The streaming half, [realtime-crypto-aggregator](https://github.com/devhongskim/realtime-crypto-aggregator), joins this pipeline's Gold layer with live crypto data in a single Athena query.
+
 A professional-grade data engineering pipeline designed to ingest, process, and analyze stock market data. This project implements a Medallion Architecture to move data from raw ingestion to analytics-ready datasets, utilizing a cloud-first approach with AWS S3, embedded DuckDB analytical stores, Apache Airflow orchestration, and Terraform-managed infrastructure.
 
 ## 📚 Additional Documentation
@@ -25,6 +29,8 @@ This pipeline demonstrates a production-ready approach to ETL/ELT, moving data f
 | **Data Analysis** | Pandas |
 | **Orchestration** | Apache Airflow (via Astro CLI) |
 | **Infrastructure as Code** | Terraform |
+| **Query Layer** | AWS Athena (Gold layer, partition projection) |
+| **Testing / CI** | pytest, GitHub Actions |
 | **Data Source** | Polygon.io API |
 
 ## 🏗 Pipeline Architecture
@@ -123,7 +129,16 @@ The current design (10 tickers, 1 API, daily batch) is intentionally simple, but
 - **At scale**: A single serialized DAG run won't parallelize across thousands of tickers or multiple markets/asset classes. Backfills (like the one used to fill in early July's missing dates) would also take proportionally longer under full serialization.
 - **Next step**: Dynamic task mapping for per-ticker (or per-batch) parallelism within a run; separate DAGs per asset class or exchange if the data sources diverge; and moving from "one big DuckDB file" concurrency-by-serialization to a warehouse that supports real concurrent writes (see above), which would allow more flexible concurrency controls than the current serialized DuckDB approach.
 
+## ⚠️ Known Data Issue: Early-July Backfill Has 5 of 10 Tickers
+
+Querying Gold in Athena (see [`athena/stock_gold_metrics.sql`](athena/stock_gold_metrics.sql)) shows GOOGL, AMZN, META, AVGO, and INTC with **20** trading days between Jul 1 and Aug 7, 2026, versus **27** for the other five tickers, and some 2026-07-10 rows have null metrics.
+
+**Likely cause**: those five are exactly the tickers added to `TICKERS` on Jul 19, and the 7 missing days are exactly the 7 trading days from Jul 1 to Jul 10, which were backfilled while the list still had only five tickers. The pipeline's idempotency gate then did what it was designed to do: dates that already had Bronze output were skipped on later runs, so the new tickers were never fetched for them. Idempotency checks on file *existence* don't notice when the definition of "complete" changes.
+
+**Fix (not yet applied)**: re-run those 7 dates with `force_overwrite` (the Silver/Gold upserts make reprocessing safe), and longer term, record the ticker list in each Bronze partition's metadata so the gate can detect stale partitions instead of trusting existence alone. The null 2026-07-10 metrics still need to be diagnosed separately.
+
 ## 🚀 Future Roadmap
+- [x] **Query layer**: Gold Parquet registered in Athena with partition projection on the existing `date=` layout ([`athena/stock_gold_metrics.sql`](athena/stock_gold_metrics.sql)), and joined with the streaming pipeline's Gold in a single cross-bucket query ([realtime-crypto-aggregator](https://github.com/devhongskim/realtime-crypto-aggregator#proof-of-work-batch--streaming-join-in-one-athena-query)).
 - [ ] **Scalability**: Dynamic task mapping in Airflow for per-ticker parallelism; migrate warehousing off single-file DuckDB to Snowflake/BigQuery/Athena (see [Scaling Considerations](#-scaling-considerations)).
 - [x] **Observability**: Failure alerting via Airflow's `on_failure_callback` (Slack).
 - [ ] **Data Quality**: Integrate Great Expectations for automated testing, with results logged to a queryable table rather than pass/fail only.

@@ -22,3 +22,7 @@ terraform/*.tfvars
 terraform/crash.log
 terraform/crash.*.log
 terraform/.terraform.lock.hcl
+
+# Generated artifacts (the DuckDB warehouse is backed up to S3 by the pipeline)
+*.duckdb
+.pytest_cache/
